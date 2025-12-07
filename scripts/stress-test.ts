@@ -81,23 +81,65 @@ class StressTestRunner {
           email,
           password,
           fullName: `Stress Test User ${userId}`,
+        }, {
+          timeout: 10000, // 10 second timeout
         });
       } catch (error: any) {
-        // User might already exist, try to login
-        if (error.response?.status !== 409) {
-          throw error;
+        // User might already exist (409 Conflict), continue to login
+        if (error.response?.status === 409) {
+          // User already exists, that's fine, we'll login instead
+        } else if (error.response) {
+          // Other HTTP error - log details
+          const status = error.response.status;
+          const message = error.response.data?.message || error.message;
+          console.error(`Failed to register user ${userId}: HTTP ${status} - ${message}`);
+          // Still try to login in case user exists
+        } else if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+          // Connection error
+          console.error(`Failed to connect to API for user ${userId}: ${error.code} - ${error.message}`);
+          return null;
+        } else {
+          // Other error
+          console.error(`Failed to register user ${userId}: ${error.message || JSON.stringify(error)}`);
+          // Still try to login in case user exists
         }
       }
 
       // Login to get token
-      const loginResponse = await axios.post(`${this.config.apiBaseUrl}/api/auth/login`, {
-        username,
-        password,
-      });
+      try {
+        const loginResponse = await axios.post(`${this.config.apiBaseUrl}/api/auth/login`, {
+          username,
+          password,
+        }, {
+          timeout: 10000, // 10 second timeout
+        });
 
-      return loginResponse.data.data.token;
+        if (!loginResponse.data?.data?.token) {
+          console.error(`Login response missing token for user ${userId}`);
+          return null;
+        }
+
+        return loginResponse.data.data.token;
+      } catch (error: any) {
+        if (error.response) {
+          const status = error.response.status;
+          const message = error.response.data?.message || error.message;
+          console.error(`Failed to login user ${userId}: HTTP ${status} - ${message}`);
+        } else if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+          console.error(`Failed to connect to API for login user ${userId}: ${error.code} - ${error.message}`);
+        } else {
+          console.error(`Failed to login user ${userId}: ${error.message || JSON.stringify(error)}`);
+        }
+        return null;
+      }
     } catch (error: any) {
-      console.error(`Failed to create/login user ${userId}:`, error.message);
+      // Fallback error handler
+      const errorMessage = error.response?.data?.message || error.message || JSON.stringify(error);
+      console.error(`Failed to create/login user ${userId}: ${errorMessage}`);
+      if (error.response) {
+        console.error(`  Status: ${error.response.status}`);
+        console.error(`  Data: ${JSON.stringify(error.response.data)}`);
+      }
       return null;
     }
   }
