@@ -2,6 +2,8 @@
 
 A high-performance, scalable flash sale backend service built with TypeScript, following SOLID principles.
 
+> 📖 **For detailed system architecture diagrams, component interactions, and design decisions, see [ARCHITECTURE.md](./ARCHITECTURE.md)**
+
 ## Architecture
 
 - **Stateless API (TypeScript)** - Autoscales horizontally
@@ -11,7 +13,12 @@ A high-performance, scalable flash sale backend service built with TypeScript, f
 - **Worker Consumer Group** - Processes purchase attempts and creates orders
 - **PostgreSQL** - Persistent order storage, flash sales, products, and users
 
-For detailed system architecture diagrams and component interactions, see [ARCHITECTURE.md](./ARCHITECTURE.md).
+📖 **See [ARCHITECTURE.md](./ARCHITECTURE.md) for:**
+- Complete system architecture diagrams (PlantUML)
+- Component interaction flows (sequence diagrams)
+- Data flow patterns (hot path vs cold path)
+- Technology stack details
+- Scalability and security features
 
 ## Features
 
@@ -121,6 +128,8 @@ npm run start:worker
 ```
 
 ## API Endpoints
+
+> 📖 **For detailed API endpoint documentation with request/response examples, see the [API Endpoints Summary](./ARCHITECTURE.md#api-endpoints-summary) section in ARCHITECTURE.md**
 
 ### Swagger Documentation
 
@@ -304,26 +313,25 @@ Get the authenticated user's purchase result status for a specific product from 
 }
 ```
 
-**Response (Pending - No result yet):**
+**Response (Key Not Found - 400 Bad Request):**
 ```json
 {
-  "success": true,
-  "data": {
-    "productId": 1,
-    "userId": "2",
-    "status": "PENDING"
-  }
+  "success": false,
+  "error": "Bad Request",
+  "message": "Order status not found. The purchase attempt may not have been processed yet or the key does not exist in Redis."
 }
 ```
 
 **Status Values:**
 - `SUCCESS`: Purchase was successful
 - `FAILED`: Purchase attempt failed
-- `PENDING`: Purchase attempt is still being processed or no result available yet
+- **400 Bad Request**: Order status key does not exist in Redis (purchase attempt not processed yet or key doesn't exist)
 
-**Note:** This endpoint reads directly from Redis cache (`flashsale:result:{userId}:{productId}`) for fast response times. The status is set by the worker after processing the purchase attempt from Kafka.
+**Note:** This endpoint reads directly from Redis cache (`flashsale:result:{userId}:{productId}`) for fast response times. The status is set by the worker after processing the purchase attempt from Kafka. If the key doesn't exist, a 400 Bad Request is returned instead of a PENDING status.
 
 ## Concurrency Control
+
+> 📖 **For detailed concurrency control flow diagrams, see the [Purchase Attempt Flow](./ARCHITECTURE.md#1-purchase-attempt-flow) section in ARCHITECTURE.md**
 
 The system prevents overselling through:
 
@@ -359,6 +367,8 @@ The system uses Redis Lua scripts for critical operations:
 Scripts are loaded on Redis connection and cached using SHA1 hashes (EVALSHA) for better performance.
 
 ## Scalability
+
+> 📖 **For detailed scalability features and architecture patterns, see the [Scalability Features](./ARCHITECTURE.md#scalability-features) section in ARCHITECTURE.md**
 
 - **Stateless API**: Can be horizontally scaled
 - **Redis Hot Path**: Fast stock checks, user tracking, and result caching
