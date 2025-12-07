@@ -1,0 +1,185 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: flash-sale-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres1}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres1}
+      POSTGRES_DB: ${POSTGRES_DB:-flash_sale}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres1} -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: flash-sale-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: flash-sale-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 10
+      ZOOKEEPER_SYNC_LIMIT: 5
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: flash-sale-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9093:9092"  # External access (PLAINTEXT_HOST) - changed to 9093 to avoid conflict
+      - "29092:29092"  # Internal Docker network (PLAINTEXT)
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: 60000
+      KAFKA_ZOOKEEPER_CONNECTION_TIMEOUT_MS: 60000
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: flash-sale-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      echo 'Waiting for Kafka to be ready...'
+      cub kafka-ready -b kafka:29092 1 30
+      echo 'Creating Kafka topic...'
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic flashsale.attempts --partitions 1 --replication-factor 1
+      echo 'Kafka topic flashsale.attempts created successfully'
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    container_name: flash-sale-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      # Use Docker service names directly (not from .env which has localhost for local dev)
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres1}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres1}
+      POSTGRES_DB: ${POSTGRES_DB:-flash_sale}
+      # Pass FLASH_SALE_TOTAL_STOCK from .env to migration
+      FLASH_SALE_TOTAL_STOCK: ${FLASH_SALE_TOTAL_STOCK:-1000}
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flash-sale-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PORT: ${PORT:-3000}
+      NODE_ENV: ${NODE_ENV:-production}
+      # Use Docker service name directly (not from .env which has localhost for local dev)
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      KAFKA_BROKERS: kafka:29092
+      # Use Docker service names directly (not from .env which has localhost for local dev)
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres1}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres1}
+      POSTGRES_DB: ${POSTGRES_DB:-flash_sale}
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-24h}
+      FLASH_SALE_START_TIME: ${FLASH_SALE_START_TIME:-2024-01-01T00:00:00Z}
+      FLASH_SALE_END_TIME: ${FLASH_SALE_END_TIME:-2024-01-01T23:59:59Z}
+      FLASH_SALE_PRODUCT_ID: ${FLASH_SALE_PRODUCT_ID:-flash-sale-product-001}
+      FLASH_SALE_TOTAL_STOCK: ${FLASH_SALE_TOTAL_STOCK:-1000}
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: flash-sale-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      # Use Docker service name directly (not from .env which has localhost for local dev)
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-flash-sale-worker-group}
+      # Use Docker service names directly (not from .env which has localhost for local dev)
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres1}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres1}
+      POSTGRES_DB: ${POSTGRES_DB:-flash_sale}
+      ENABLE_CONSUMER: ${ENABLE_CONSUMER:-true}
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
